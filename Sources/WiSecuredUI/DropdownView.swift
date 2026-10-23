@@ -47,7 +47,14 @@ struct DropdownView: View {
             .disabled(monitor.checking)
             Divider()
             HStack {
-                Text("WiSecured").font(.caption).foregroundStyle(.secondary)
+                if monitor.report?.network.interfaceName != nil {
+                    Button(monitor.isCurrentTrusted ? "Trusted ✓" : "Trust this network…") { monitor.toggleTrustCurrent() }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(Theme.accent)
+                        .help(monitor.isCurrentTrusted ? "Click to stop trusting this network" : "Mark this as your home or office network")
+                } else {
+                    Text("WiSecured").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Settings…", action: actions.openSettings).buttonStyle(.borderless)
                 Button("Quit", action: actions.quit).buttonStyle(.borderless)
@@ -75,7 +82,7 @@ struct DropdownView: View {
 
     private func tags(_ n: NetworkContext) -> some View {
         HStack(spacing: 6) {
-            if n.isExpensive { tag("Phone hotspot", .secondary) }
+            if let kind = monitor.currentKindLabel { tag(kind, kind == "Trusted" ? Theme.accent : .secondary) }
             if n.isWiFi {
                 let open = n.securityRaw == 0
                 tag(open ? "Open · no password" : n.security, open ? Color(nsColor: Theme.yellow) : .secondary)

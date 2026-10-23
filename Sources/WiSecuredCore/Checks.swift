@@ -323,6 +323,49 @@ public enum Checks {
         }
     }
 
+    // MARK: 11 · Known network (phase 2: network memory + evil-twin hints)
+
+    public static func networkMemory(_ r: MemoryReading) -> Finding {
+        if r.isWiFi && r.ssid == nil {
+            return Finding(.networkMemory, .unknown, summary: "Unknown",
+                           seen: "macOS didn't share this network's name.", meaning: "Usually missing Location permission, so networks can't be recognised.",
+                           action: "Allow Location for WiSecured in System Settings › Privacy & Security.")
+        }
+        guard r.ssid != nil || r.routerMAC != nil else {
+            return Finding(.networkMemory, .unknown, summary: "Unknown", seen: "No network name or router address yet.", meaning: "Still connecting.")
+        }
+        let name = r.ssid.map { "\"\($0)\"" } ?? "This wired network"
+        // Evil-twin sign: a name seen with encryption before is now open or WEP.
+        if r.isWiFi, let now = NetworkMemory.securityRank(r.securityRaw), now <= 1, let before = r.strongestRankForName, before >= 2 {
+            return Finding(.networkMemory, .warn, summary: "Weaker security than before",
+                           seen: "\(name) used \(r.strongestNameSecurity ?? "encryption") before; now it is \(r.security).",
+                           meaning: "A network imitating a known name (an \"evil twin\") often has no password. It can also be the venue changing its Wi-Fi.",
+                           action: "Don't log in to anything until you know why. Prefer your hotspot or a VPN.")
+        }
+        switch r.match {
+        case .known(let record):
+            let trusted = record.kind == .trusted
+            return Finding(.networkMemory, .ok, summary: trusted ? "Trusted" : "Seen \(record.timesSeen)×",
+                           seen: "\(name) with the same router as before — first seen \(record.firstSeen.formatted(date: .abbreviated, time: .omitted)), \(record.timesSeen) visit\(record.timesSeen == 1 ? "" : "s").",
+                           meaning: trusted ? "A network you marked as trusted, and it is the same one." : "The same network as before.")
+        case .new(sameName: true, trustedName: true, let routers):
+            return Finding(.networkMemory, .warn, summary: "Trusted name, different router",
+                           seen: "\(name) is a network you trust, but its router (\(r.routerMAC ?? "unknown")) isn't the one remembered (\(routers.joined(separator: ", "))).",
+                           meaning: "Either the router was replaced, or another device is imitating your trusted network (an \"evil twin\").",
+                           action: "If you replaced the router yourself, choose \"Trust this network\". Otherwise don't use it — switch to your hotspot.")
+        case .new(sameName: true, trustedName: false, _):
+            return Finding(.networkMemory, .info, summary: "Same name, new router",
+                           seen: "\(name) was seen before, but with a different router.",
+                           meaning: "Often another location with the same Wi-Fi name (a chain café, hotel floors). It can also be an imitation.",
+                           action: "Remembered as a separate network from now on.")
+        case .new:
+            return Finding(.networkMemory, .info, summary: "New network",
+                           seen: "First time on \(name).",
+                           meaning: "Remembered from now on (only on this Mac), so later changes can be spotted.",
+                           action: "If it's your home or office, choose \"Trust this network\".")
+        }
+    }
+
     // MARK: 10 · Routing health
 
     public struct RouteEntry: Sendable, Equatable {

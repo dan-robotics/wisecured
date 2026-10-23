@@ -48,8 +48,11 @@ public enum NetIO {
 
     /// Reached by IP, not by name: networks (and DNS filters such as Pi-hole) often block the
     /// names dns.quad9.net / cloudflare-dns.com. Both certificates are valid for these IPs.
+    /// Quad9 9.9.9.9 = threat blocking + DNSSEC, no ECS · Cloudflare 1.1.1.2 = malware blocking +
+    /// DNSSEC · Google 8.8.8.8 = DNSSEC. Certificates valid for the IPs (checked 2026-10-23).
     public static let quad9DoH = URL(string: "https://9.9.9.9/dns-query")!
-    public static let cloudflareDoH = URL(string: "https://1.1.1.1/dns-query")!
+    public static let cloudflareDoH = URL(string: "https://1.1.1.2/dns-query")!
+    public static let googleDoH = URL(string: "https://8.8.8.8/dns-query")!
 
     public static func doh(name: String, endpoint: URL, timeout: TimeInterval = 5) async -> DNSOutcome {
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)

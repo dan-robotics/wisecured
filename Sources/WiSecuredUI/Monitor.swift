@@ -14,6 +14,9 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var report: Report?
     @Published private(set) var checking = false
     @Published private(set) var locationAllowed = false
+    /// Phase 2: networks remembered on this Mac (Application Support, owner-only).
+    @Published private(set) var networks: [RememberedNetwork] = []
+    private let memoryFile = NetworkMemoryFile(bundleID: Bundle.main.bundleIdentifier ?? "io.github.dan-robotics.WiSecured")
 
     let settings: AppSettings
     private let location = CLLocationManager()
@@ -34,6 +37,7 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         location.delegate = self
         locationAllowed = Self.allowed(location.authorizationStatus)
         location.requestWhenInUseAuthorization()
+        networks = memoryFile.load()
 
         pathMonitor = Self.makePathMonitor { [weak self] update in
             Task { @MainActor in self?.pathChanged(update) }
@@ -86,8 +90,9 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         let probeContext = checker.context(physical: physical, isExpensive: isExpensive)
         let key = Self.key(for: probeContext)
         let baseline = routerBaseline[key]
+        let memory = networks
         Task.detached {
-            let report = await checker.run(physical: physical, isExpensive: isExpensive, previousRouterMAC: baseline)
+            let report = await checker.run(physical: physical, isExpensive: isExpensive, previousRouterMAC: baseline, memory: memory)
             await MainActor.run { self.finished(report, key: key) }
         }
     }
@@ -97,6 +102,11 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         networkKey = key
         if routerBaseline[key] == nil, let mac = report.network.routerMAC { routerBaseline[key] = mac }
         publish(report)
+        // Remember this network (never one judged "don't trust": an evil twin must not become "known").
+        if report.verdict != .danger, report.verdict != .offline {
+            networks = NetworkMemory.remembering(report.network, in: networks)
+            memoryFile.save(networks)
+        }
         restartTimers()
     }
 
@@ -133,6 +143,49 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// One network = its name + router (works for any IP range, mesh access points share it).
     static func key(for context: NetworkContext) -> String {
         "\(context.interfaceName ?? "-")|\(context.ssid ?? "-")|\(context.router ?? "-")"
+    }
+
+    // MARK: Network memory (phase 2)
+
+    /// The remembered record for the network the Mac is on now.
+    var currentRecord: RememberedNetwork? {
+        guard let network = report?.network else { return nil }
+        if case .known(let record) = NetworkMemory.assess(network, records: networks).match { return record }
+        return nil
+    }
+
+    /// "Trusted" / "Phone hotspot" / "Public" for the dropdown tag.
+    var currentKindLabel: String? {
+        guard let network = report?.network, network.interfaceName != nil else { return nil }
+        switch currentRecord?.kind {
+        case .trusted: return "Trusted"
+        case .hotspot: return "Phone hotspot"
+        case .publicNetwork: return "Public"
+        default: return network.isExpensive ? "Phone hotspot" : "Public"
+        }
+    }
+
+    var isCurrentTrusted: Bool { currentRecord?.kind == .trusted }
+
+    /// Trust (or stop trusting) the current network, then re-check so the finding updates.
+    func toggleTrustCurrent() {
+        guard let network = report?.network else { return }
+        if currentRecord == nil { networks = NetworkMemory.remembering(network, in: networks) }
+        guard let record = currentRecord else { return }
+        setKind(record.id, record.kind == .trusted ? .automatic : .trusted)
+    }
+
+    func setKind(_ id: UUID, _ kind: RememberedNetwork.Kind) {
+        guard let index = networks.firstIndex(where: { $0.id == id }) else { return }
+        networks[index].kind = kind
+        memoryFile.save(networks)
+        checkNow()
+    }
+
+    func forget(_ id: UUID) {
+        networks.removeAll { $0.id == id }
+        memoryFile.save(networks)
+        checkNow()
     }
 
     // MARK: Timers

@@ -124,7 +124,14 @@ final class ChecksTests: XCTestCase {
 
     func testDoHReachedByIP() {
         XCTAssertEqual(NetIO.quad9DoH.host, "9.9.9.9")
-        XCTAssertEqual(NetIO.cloudflareDoH.host, "1.1.1.1")
+        XCTAssertEqual(NetIO.cloudflareDoH.host, "1.1.1.2")
+        XCTAssertEqual(NetIO.googleDoH.host, "8.8.8.8")
+    }
+
+    func testReferenceFallbackOrder() {
+        XCTAssertEqual(Checker.Reference.quad9.fallbackOrder, [.quad9, .cloudflare, .google])
+        XCTAssertEqual(Checker.Reference.google.fallbackOrder, [.google, .quad9, .cloudflare])
+        XCTAssertEqual(Checker.Reference.cloudflare.address, "1.1.1.2")
     }
 
     func testDNSAnswersNamesTheServer() {
@@ -233,5 +240,84 @@ final class VerdictTests: XCTestCase {
 
     func testOffline() {
         XCTAssertEqual(VerdictRules.decide([], network: net, connected: false).verdict, .offline)
+    }
+}
+
+// Phase 2: network memory + evil-twin hints, from simulated networks.
+final class NetworkMemoryTests: XCTestCase {
+    private func wifi(_ ssid: String?, router: String? = "192.168.1.1", mac: String?, bssid: String? = nil, security: Int = 4, name: String = "WPA2 Personal") -> NetworkContext {
+        NetworkContext(interfaceName: "en0", isWiFi: true, ssid: ssid, bssid: bssid, securityRaw: security, security: name,
+                       router: router, routerMAC: mac)
+    }
+
+    func testSecurityRank() {
+        XCTAssertEqual(NetworkMemory.securityRank(0), 0)
+        XCTAssertEqual(NetworkMemory.securityRank(1), 1)
+        XCTAssertEqual(NetworkMemory.securityRank(4), 4)
+        XCTAssertEqual(NetworkMemory.securityRank(11), 5)
+        XCTAssertNil(NetworkMemory.securityRank(nil))
+    }
+
+    func testNewThenKnown() {
+        let home = wifi("Home", mac: "aa:aa:aa:aa:aa:01", bssid: "b0:00:00:00:00:01")
+        XCTAssertEqual(Checks.networkMemory(NetworkMemory.assess(home, records: [])).summary, "New network")
+        var records = NetworkMemory.remembering(home, in: [])
+        XCTAssertEqual(records.count, 1)
+        records = NetworkMemory.remembering(home, in: records)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].timesSeen, 2)
+        let f = Checks.networkMemory(NetworkMemory.assess(home, records: records))
+        XCTAssertEqual(f.status, .ok)
+        XCTAssertEqual(f.summary, "Seen 2×")
+    }
+
+    /// Mesh: a second access point of the same network (same router) is the same network.
+    func testMeshAccessPointIsKnown() {
+        let a = wifi("Home", mac: "aa:aa:aa:aa:aa:01", bssid: "b0:00:00:00:00:01")
+        let b = wifi("Home", mac: "aa:aa:aa:aa:aa:01", bssid: "b0:00:00:00:00:02")
+        let records = NetworkMemory.remembering(a, in: [])
+        if case .known = NetworkMemory.assess(b, records: records).match {} else { XCTFail("mesh access point not recognised") }
+        XCTAssertEqual(NetworkMemory.remembering(b, in: records)[0].accessPoints.count, 2)
+    }
+
+    /// A chain café: same name, different router → separate network, info only.
+    func testSameNameDifferentRouterIsInfo() {
+        let one = wifi("Cafe-Free", mac: "aa:aa:aa:aa:aa:01")
+        let two = wifi("Cafe-Free", mac: "cc:cc:cc:cc:cc:02")
+        let records = NetworkMemory.remembering(one, in: [])
+        let f = Checks.networkMemory(NetworkMemory.assess(two, records: records))
+        XCTAssertEqual(f.status, .info)
+        XCTAssertEqual(f.summary, "Same name, new router")
+        XCTAssertEqual(NetworkMemory.remembering(two, in: records).count, 2)
+    }
+
+    /// A trusted network's name with an unknown router: router replaced, or an evil twin → warn.
+    func testTrustedNameDifferentRouterWarns() {
+        var records = NetworkMemory.remembering(wifi("Home", mac: "aa:aa:aa:aa:aa:01"), in: [])
+        records[0].kind = .trusted
+        XCTAssertEqual(Checks.networkMemory(NetworkMemory.assess(wifi("Home", mac: "aa:aa:aa:aa:aa:01"), records: records)).summary, "Trusted")
+        let f = Checks.networkMemory(NetworkMemory.assess(wifi("Home", mac: "ee:ee:ee:ee:ee:09"), records: records))
+        XCTAssertEqual(f.status, .warn)
+        XCTAssertEqual(f.summary, "Trusted name, different router")
+    }
+
+    /// Evil-twin sign: a name seen with WPA2 is now open → warn. WPA3 → WPA2 alone is not flagged.
+    func testSecurityDowngrade() {
+        let records = NetworkMemory.remembering(wifi("Hotel", mac: "aa:aa:aa:aa:aa:01", security: 11, name: "WPA3 Personal"), in: [])
+        let open = Checks.networkMemory(NetworkMemory.assess(wifi("Hotel", mac: "dd:dd:dd:dd:dd:02", security: 0, name: "Open (no password)"), records: records))
+        XCTAssertEqual(open.status, .warn)
+        XCTAssertEqual(open.summary, "Weaker security than before")
+        let wpa2 = Checks.networkMemory(NetworkMemory.assess(wifi("Hotel", mac: "aa:aa:aa:aa:aa:01", security: 4), records: records))
+        XCTAssertEqual(wpa2.status, .ok, "mixed-mode routers report WPA3/WPA2 inconsistently — not an alarm")
+    }
+
+    func testNoNameWithoutLocation() {
+        XCTAssertEqual(Checks.networkMemory(NetworkMemory.assess(wifi(nil, mac: "aa:aa:aa:aa:aa:01"), records: [])).status, .unknown)
+    }
+
+    func testHotspotRememberedAsHotspot() {
+        var hotspot = wifi("Phone", router: "172.20.10.1", mac: "aa:aa:aa:aa:aa:07")
+        hotspot.isExpensive = true
+        XCTAssertEqual(NetworkMemory.remembering(hotspot, in: [])[0].kind, .hotspot)
     }
 }

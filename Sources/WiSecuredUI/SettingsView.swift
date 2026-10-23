@@ -5,6 +5,7 @@ import WiSecuredCore
 /// Settings window: General · Checks · About & privacy (My networks / Hotspot arrive in phases 2–3).
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var monitor: Monitor
     let edition: Edition
     let aboutNote: String?
     @State private var launchAtLogin = false
@@ -13,11 +14,12 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             general.tabItem { Label("General", systemImage: "gearshape") }
+            networksTab.tabItem { Label("My networks", systemImage: "wifi") }
             checks.tabItem { Label("Checks", systemImage: "checklist") }
             about.tabItem { Label("About & privacy", systemImage: "lock.shield") }
         }
         .padding(18)
-        .frame(width: 560, height: 470)
+        .frame(width: 600, height: 500)
         .onAppear { launchAtLogin = settings.launchAtLogin }
     }
 
@@ -35,12 +37,45 @@ struct SettingsView: View {
                 ForEach(AppSettings.watchChoices, id: \.seconds) { Text($0.label).tag($0.seconds) }
             }
             Picker("Compare DNS with", selection: $settings.reference) {
-                Text("Quad9 (backup: Cloudflare)").tag(Checker.Reference.quad9)
-                Text("Cloudflare (backup: Quad9)").tag(Checker.Reference.cloudflare)
+                Text("Quad9 · 9.9.9.9 — threat blocking + DNSSEC").tag(Checker.Reference.quad9)
+                Text("Cloudflare · 1.1.1.2 — malware blocking + DNSSEC").tag(Checker.Reference.cloudflare)
+                Text("Google · 8.8.8.8 — DNSSEC").tag(Checker.Reference.google)
             }
             Toggle("Notify me when a network turns red", isOn: $settings.notifyOnRed)
             Toggle("Show the network name next to the menu bar icon", isOn: $settings.showNetworkName)
             privacyNote
+        }
+        .formStyle(.grouped)
+    }
+
+    private var networksTab: some View {
+        Form {
+            Section {
+                if monitor.networks.isEmpty {
+                    Text("No networks remembered yet. Each network you join is remembered after its first check.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ForEach(monitor.networks.sorted { $0.lastSeen > $1.lastSeen }) { record in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(record.displayName).font(.system(size: 13, weight: .semibold))
+                            Text("Last seen \(record.lastSeen.formatted(date: .abbreviated, time: .shortened)) · \(record.timesSeen) visit\(record.timesSeen == 1 ? "" : "s")\(record.lastSecurity.map { " · \($0)" } ?? "")")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Picker("", selection: Binding(get: { record.kind }, set: { monitor.setKind(record.id, $0) })) {
+                            ForEach(RememberedNetwork.Kind.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 140)
+                        Button("Forget") { monitor.forget(record.id) }.buttonStyle(.borderless)
+                    }
+                }
+            } header: {
+                Text("Remembered networks")
+            } footer: {
+                Text("Trusted = your home or office. Automatic = phone hotspots are recognised, everything else counts as public. Stored only on this Mac: network name, router hardware address, access points, strongest security seen.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
@@ -96,8 +131,8 @@ struct SettingsView: View {
     static let contacts = [
         "captive.apple.com, detectportal.firefox.com — login-page and page-integrity tests (plain HTTP)",
         "www.apple.com — checks that the switch to HTTPS is kept",
-        "9.9.9.9 / 1.1.1.1 (Quad9 / Cloudflare) — encrypted DNS used as the reference, reached by IP so DNS filters can't block it",
-        "9.9.9.9 or 1.1.1.1 — DNSSEC test (dnssec-failed.org), plain DNS",
+        "9.9.9.9 / 1.1.1.2 / 8.8.8.8 (Quad9 / Cloudflare / Google, your choice first) — encrypted DNS used as the reference, reached by IP so DNS filters can't block it",
+        "The same address of your chosen service — DNSSEC test (dnssec-failed.org), plain DNS",
         "192.0.2.53 — reserved test address (nothing lives there; any answer = interception)",
         "www.apple.com, www.google.com, www.cloudflare.com, www.wikipedia.org, github.com — certificate check (connects, sends nothing)",
         "The DNS server your Mac uses (or the network's) — test names a.root-servers.net, k.root-servers.net, one.one.one.one, dns.google, dns.quad9.net",
@@ -114,6 +149,7 @@ struct SettingsView: View {
         case .networkDNS: return "Who answers your DNS: the router, a public service, or another device on the network?"
         case .pageIntegrity: return "Do web pages arrive unmodified, and is the switch to HTTPS kept?"
         case .wifiSecurity: return "Is the Wi-Fi open, broken (WEP), or encrypted (WPA2/WPA3)?"
+        case .networkMemory: return "Is this a network you know, and is it the same one? Warns when a trusted name has a different router, or a name that was encrypted is now open (evil-twin signs). Remembered only on this Mac."
         case .routingHealth: return "Any dead or conflicting routes, e.g. leftovers from a VPN on another network? (Read-only.)"
         }
     }

@@ -98,6 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
         menu.addItem(menuItem("Check now", #selector(checkNowFromMenu), "r"))
+        if report?.network.interfaceName != nil {
+            let trusted = monitor?.isCurrentTrusted == true
+            menu.addItem(menuItem(trusted ? "Stop trusting this network" : "Trust this network", #selector(trustFromMenu), ""))
+        }
         menu.addItem(menuItem("Settings…", #selector(settingsFromMenu), ","))
         menu.addItem(menuItem("About WiSecured", #selector(aboutFromMenu), ""))
         if let tools, !tools.groups.isEmpty {
@@ -134,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkNowFromMenu() { monitor?.checkNow() }
+    @objc private func trustFromMenu() { monitor?.toggleTrustCurrent() }
 
     @objc private func toolFromMenu(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? ToolBox else { return }
@@ -171,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showSettings() {
         popover.performClose(nil)
         if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings, edition: edition, aboutNote: aboutNote)))
+            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings, monitor: monitor!, edition: edition, aboutNote: aboutNote)))
             window.title = "WiSecured Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false

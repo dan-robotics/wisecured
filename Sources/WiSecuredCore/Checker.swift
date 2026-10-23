@@ -1,15 +1,25 @@
 import Foundation
 import Network
 
-/// Runs the ten checks against the current network and returns one Report. Read-only: it reads
+/// Runs the eleven checks against the current network and returns one Report. Read-only: it reads
 /// local state and sends test questions; it never changes a setting or a route.
 public struct Checker: Sendable {
+    /// The encrypted-DNS reference (Settings › Compare DNS with). Each falls back to the others.
     public enum Reference: String, Sendable, CaseIterable {
-        case quad9, cloudflare
-        public var name: String { self == .quad9 ? "Quad9" : "Cloudflare" }
-        var doh: URL { self == .quad9 ? NetIO.quad9DoH : NetIO.cloudflareDoH }
-        var plainDNS: String { self == .quad9 ? "9.9.9.9" : "1.1.1.1" }
-        var other: Reference { self == .quad9 ? .cloudflare : .quad9 }
+        case quad9, cloudflare, google
+
+        public var name: String {
+            switch self { case .quad9: return "Quad9"; case .cloudflare: return "Cloudflare"; case .google: return "Google" }
+        }
+        public var address: String { plainDNS }
+        var doh: URL {
+            switch self { case .quad9: return NetIO.quad9DoH; case .cloudflare: return NetIO.cloudflareDoH; case .google: return NetIO.googleDoH }
+        }
+        var plainDNS: String {
+            switch self { case .quad9: return "9.9.9.9"; case .cloudflare: return "1.1.1.2"; case .google: return "8.8.8.8" }
+        }
+        /// This one first, then the others in the standard order.
+        public var fallbackOrder: [Reference] { [self] + Reference.allCases.filter { $0 != self } }
     }
 
     public var reference: Reference
@@ -44,7 +54,9 @@ public struct Checker: Sendable {
 
     // MARK: Full check
 
-    public func run(physical: (name: String, isWiFi: Bool)?, isExpensive: Bool, previousRouterMAC: String?) async -> Report {
+    /// `memory` = the networks remembered on this Mac (phase 2), for the "Known network" check.
+    public func run(physical: (name: String, isWiFi: Bool)?, isExpensive: Bool, previousRouterMAC: String?,
+                    memory: [RememberedNetwork] = []) async -> Report {
         let context = context(physical: physical, isExpensive: isExpensive)
         guard physical != nil else {
             let decided = VerdictRules.decide([], network: context, connected: false)
@@ -78,6 +90,7 @@ public struct Checker: Sendable {
             Checks.networkDNS(servers: context.dnsFromNetwork, router: context.router, setOnMac: context.dnsSetOnMac),
             Checks.pageIntegrity(.init(appleBody: appleResult?.body, firefoxBody: (await firefox)?.body, httpsUpgradeKept: upgradeKept)),
             Checks.wifiSecurity(isWiFi: context.isWiFi, securityRaw: context.securityRaw, securityName: context.security),
+            Checks.networkMemory(NetworkMemory.assess(context, records: memory)),
             Checks.routingHealth(routing, vpnInterfaces: context.vpnInterfaces),
         ]
         let decided = VerdictRules.decide(findings, network: context, connected: true)
@@ -103,8 +116,12 @@ public struct Checker: Sendable {
             for anchor in Checks.anchors {
                 group.addTask {
                     async let network: DNSOutcome = server == nil ? .error("no DNS server") : NetIO.dns(server: server!, name: anchor.name, via: via).outcome
-                    var reference = await NetIO.doh(name: anchor.name, endpoint: self.reference.doh)
-                    if case .error = reference { reference = await NetIO.doh(name: anchor.name, endpoint: self.reference.other.doh) }
+                    var reference: DNSOutcome = .noAnswer
+                    for candidate in self.reference.fallbackOrder {
+                        reference = await NetIO.doh(name: anchor.name, endpoint: candidate.doh)
+                        if case .error = reference { continue }
+                        break
+                    }
                     return Checks.AnchorReading(name: anchor.name, expected: anchor.expected, network: await network, reference: reference)
                 }
             }
