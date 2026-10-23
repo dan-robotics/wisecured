@@ -73,6 +73,30 @@ A network that changes DNS answers can be an attacker — or your internet provi
 
 On an iPhone, open **Settings › Personal Hotspot** before switching — otherwise the phone isn't visible to the Mac. macOS doesn't let apps join a password-protected network without the password, which is why it's typed once.
 
+## How to
+
+### Choose your DNS provider (Secure my DNS)
+1. Right-click the shield › **Settings…** › **Secure DNS**.
+2. **Provider:** Quad9, Cloudflare, Google, AdGuard or DNS4EU.
+3. **Stay off on these networks:** tick the networks where you want to keep their own DNS (e.g. home with a Pi-hole). Untick to use your provider there too.
+4. Optional: **names that keep the network's / VPN's DNS**, e.g. `corp.example.com`.
+5. Click **Create profile and install…**. System Settings opens: **General › Device Management › WiSecured — Secure DNS › Install** (asks for your Mac password).
+
+From then on your Mac uses that provider on every network, encrypted. **Change provider:** pick another one and click **Create profile and install…** again — the new profile replaces the old one. **Turn it off:** **Remove or switch off…** in the same tab, then remove the profile in System Settings › General › Device Management. macOS shows the profile as "Unverified" because it's made on your Mac, not signed by a company. On a hotel login page that doesn't appear, switch Secure DNS off while you log in.
+
+### Set the DNS for each network (DNS rules)
+1. **Settings… › DNS & proxy** › switch on **DNS rules** (WiSecured asks first).
+2. Next to a network, type the DNS you want, e.g. `192.168.1.53` for a Pi-hole at home, or `9.9.9.9 149.112.112.112`. Empty = that network's own DNS. Networks you haven't joined yet use their own DNS.
+3. WiSecured sets it whenever you join that network (recognised by name + router). If another app or script keeps changing DNS back, DNS rules switch themselves off and tell you — switch that tool off first.
+
+To stop: switch **DNS rules** off. Encrypted DNS everywhere is **Secure my DNS** (above); DNS rules set plain DNS addresses.
+
+### Confirm your DNS filter ("This is my filter")
+On a network marked **Trusted** whose DNS is a local device (e.g. a Pi-hole), open **DNS answers** or **Network DNS server** in the dropdown and click **This is my filter (address)**. Both turn 🟢; if a different device ever answers at that address, they turn 🔴. Remove it in **Settings › My networks › My filter devices**.
+
+### Who owns this?
+Appears under **DNS answers** only when your DNS **rewrote** an answer (sent a name to another address). It asks the internet registry who owns that address and your own network's address: same organisation → 🟡 with the owner named (a provider filter); anyone else or unknown → 🔴 stays. Blocked names (0.0.0.0, "Filtered") have nothing to look up, so no button.
+
 ## Privacy and security
 
 - **Only looks at your Mac's own connection.** It never scans other devices and never reads anyone's traffic.
