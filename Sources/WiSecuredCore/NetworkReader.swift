@@ -190,6 +190,20 @@ public enum NetworkReader {
         return iface.security().rawValue
     }
 
+    /// The system proxy settings as apps see them (System Settings › Network › Details › Proxies).
+    public static func systemProxies() -> (entries: [Checks.ProxyEntry], autoConfigURL: String?, autoDiscovery: Bool) {
+        guard let d = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else { return ([], nil, false) }
+        func on(_ key: String) -> Bool { (d[key] as? Int ?? 0) == 1 }
+        var entries: [Checks.ProxyEntry] = []
+        for (enable, host, port, kind) in [("HTTPEnable", "HTTPProxy", "HTTPPort", "Web proxy (HTTP)"),
+                                           ("HTTPSEnable", "HTTPSProxy", "HTTPSPort", "Secure web proxy (HTTPS)"),
+                                           ("SOCKSEnable", "SOCKSProxy", "SOCKSPort", "SOCKS proxy")] where on(enable) {
+            if let h = d[host] as? String, !h.isEmpty { entries.append(Checks.ProxyEntry(kind: kind, host: h, port: d[port] as? Int ?? 0)) }
+        }
+        let pac = on("ProxyAutoConfigEnable") ? (d["ProxyAutoConfigURLString"] as? String) : nil
+        return (entries, pac, on("ProxyAutoDiscoveryEnable"))
+    }
+
     // MARK: Routing table + interfaces (read-only)
 
     /// IPv4 routes, read inside the app (same data as `netstat -rn`).

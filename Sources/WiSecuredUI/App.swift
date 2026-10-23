@@ -102,6 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let trusted = monitor?.isCurrentTrusted == true
             menu.addItem(menuItem(trusted ? "Stop trusting this network" : "Trust this network", #selector(trustFromMenu), ""))
         }
+        if let monitor, monitor.isOnHotspot, let back = monitor.previousSSID {
+            menu.addItem(menuItem("Back to \"\(back)\"", #selector(backFromMenu), ""))
+        } else if let monitor, monitor.settings.hotspotSSID != nil, !monitor.isOnHotspot {
+            menu.addItem(menuItem("Switch to my hotspot", #selector(hotspotFromMenu), ""))
+        }
         menu.addItem(menuItem("Settings…", #selector(settingsFromMenu), ","))
         menu.addItem(menuItem("About WiSecured", #selector(aboutFromMenu), ""))
         if let tools, !tools.groups.isEmpty {
@@ -139,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkNowFromMenu() { monitor?.checkNow() }
     @objc private func trustFromMenu() { monitor?.toggleTrustCurrent() }
+    @objc private func hotspotFromMenu() { monitor?.switchToHotspot() }
+    @objc private func backFromMenu() { monitor?.switchBack() }
 
     @objc private func toolFromMenu(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? ToolBox else { return }

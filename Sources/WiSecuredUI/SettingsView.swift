@@ -10,11 +10,17 @@ struct SettingsView: View {
     let aboutNote: String?
     @State private var launchAtLogin = false
     @State private var loginError: String?
+    @State private var pickedHotspot = ""
+    @State private var hotspotPassword = ""
+    @State private var hotspotStatus: String?
+    @State private var savedNetworks: [SavedNetwork] = []
+    @State private var rememberedPasswords: [String] = []
 
     var body: some View {
         TabView {
             general.tabItem { Label("General", systemImage: "gearshape") }
             networksTab.tabItem { Label("My networks", systemImage: "wifi") }
+            hotspotTab.tabItem { Label("Hotspot", systemImage: "personalhotspot") }
             checks.tabItem { Label("Checks", systemImage: "checklist") }
             about.tabItem { Label("About & privacy", systemImage: "lock.shield") }
         }
@@ -46,6 +52,76 @@ struct SettingsView: View {
             privacyNote
         }
         .formStyle(.grouped)
+    }
+
+    private var hotspotTab: some View {
+        Form {
+            Section {
+                Picker("Hotspot", selection: $pickedHotspot) {
+                    Text("Choose…").tag("")
+                    ForEach(savedNetworks.map(\.ssid), id: \.self) { Text($0).tag($0) }
+                    if !pickedHotspot.isEmpty && !savedNetworks.contains(where: { $0.ssid == pickedHotspot }) {
+                        Text(pickedHotspot).tag(pickedHotspot)
+                    }
+                }
+                TextField("…or type its Wi-Fi name", text: $pickedHotspot)
+                SecureField(WiFiPasswords.has(pickedHotspot) ? "Password (saved — type to replace)" : "Password", text: $hotspotPassword)
+                HStack {
+                    Button("Save hotspot") { saveHotspot() }.disabled(pickedHotspot.isEmpty)
+                    if let current = settings.hotspotSSID {
+                        Button("Remove \"\(current)\"", role: .destructive) { removeHotspot(current) }
+                    }
+                }
+                if let hotspotStatus { Text(hotspotStatus).font(.system(size: 11.5)).foregroundStyle(.secondary) }
+            } header: {
+                Text("Your phone hotspot")
+            } footer: {
+                Text("Used by \"Switch to my hotspot\" (dropdown, right-click menu, red notifications). The name is kept in WiSecured's settings; the password only in your Mac's Keychain. Before switching to an iPhone hotspot, open Settings › Personal Hotspot on the phone so the Mac can see it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Section("Saved Wi-Fi passwords (Keychain)") {
+                if rememberedPasswords.isEmpty {
+                    Text("None.").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ForEach(rememberedPasswords, id: \.self) { ssid in
+                    HStack {
+                        Text(ssid)
+                        if ssid == settings.hotspotSSID { Text("hotspot").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                        Button("Delete") { WiFiPasswords.delete(ssid); rememberedPasswords = WiFiPasswords.allSSIDs() }.buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            pickedHotspot = settings.hotspotSSID ?? ""
+            savedNetworks = NetworkReader.savedNetworks()
+            rememberedPasswords = WiFiPasswords.allSSIDs()
+        }
+    }
+
+    private func saveHotspot() {
+        let ssid = pickedHotspot.trimmingCharacters(in: .whitespaces)
+        guard !ssid.isEmpty else { return }
+        if !hotspotPassword.isEmpty {
+            if let error = WiFiPasswords.save(hotspotPassword, for: ssid) { hotspotStatus = "Couldn't save the password: \(error)"; return }
+        } else if !WiFiPasswords.has(ssid) && !WiFiSwitch.isOpen(ssid) {
+            hotspotStatus = "Type the hotspot's password (it's saved only in your Keychain)."
+            return
+        }
+        settings.hotspotSSID = ssid
+        hotspotPassword = ""
+        rememberedPasswords = WiFiPasswords.allSSIDs()
+        hotspotStatus = "Saved: \"\(ssid)\". The password is in your Keychain."
+    }
+
+    private func removeHotspot(_ ssid: String) {
+        WiFiPasswords.delete(ssid)
+        settings.hotspotSSID = nil
+        pickedHotspot = ""
+        rememberedPasswords = WiFiPasswords.allSSIDs()
+        hotspotStatus = "Removed. Its password was deleted from the Keychain."
     }
 
     private var networksTab: some View {
@@ -147,6 +223,7 @@ struct SettingsView: View {
         case .certificates: return "Do well-known HTTPS sites present genuine certificates? (A company proxy shows as yellow.)"
         case .routerIdentity: return "Is the router still the same device? Watched every few seconds."
         case .networkDNS: return "Who answers your DNS: the router, a public service, or another device on the network?"
+        case .systemProxy: return "Is a proxy set on this Mac — and does it point at an address that isn't on the network you're on (traffic hangs, or goes to whoever takes that address)?"
         case .pageIntegrity: return "Do web pages arrive unmodified, and is the switch to HTTPS kept?"
         case .wifiSecurity: return "Is the Wi-Fi open, broken (WEP), or encrypted (WPA2/WPA3)?"
         case .networkMemory: return "Is this a network you know, and is it the same one? Warns when a trusted name has a different router, or a name that was encrypted is now open (evil-twin signs). Remembered only on this Mac."

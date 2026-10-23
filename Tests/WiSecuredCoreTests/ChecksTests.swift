@@ -321,3 +321,47 @@ final class NetworkMemoryTests: XCTestCase {
         XCTAssertEqual(NetworkMemory.remembering(hotspot, in: [])[0].kind, .hotspot)
     }
 }
+
+// Phase 3: switching messages (the join itself needs real Wi-Fi and is tested on screen).
+final class WiFiSwitchTests: XCTestCase {
+    func testOutcomeMessages() {
+        XCTAssertTrue(WiFiSwitch.Outcome.joined("Phone").succeeded)
+        XCTAssertFalse(WiFiSwitch.Outcome.notInRange("Phone").succeeded)
+        XCTAssertTrue(WiFiSwitch.Outcome.notInRange("Phone").message.contains("Personal Hotspot"))
+        XCTAssertTrue(WiFiSwitch.Outcome.failed("Cafe", code: -3900).message.contains("password"))
+        XCTAssertTrue(WiFiSwitch.Outcome.failed("Cafe", code: 12345).message.contains("12345"))
+    }
+}
+
+// System proxy: a work proxy left switched on, then used on a phone hotspot.
+final class SystemProxyTests: XCTestCase {
+    private let http = Checks.ProxyEntry(kind: "Web proxy (HTTP)", host: "192.168.77.10", port: 3128)
+
+    func testNoProxy() {
+        XCTAssertEqual(Checks.systemProxy(.init(entries: [], autoConfigURL: nil, autoDiscovery: false, localAddress: "172.20.10.3", localMask: "255.255.255.240")).status, .ok)
+    }
+
+    func testProxyNotOnThisNetworkWarns() {
+        let f = Checks.systemProxy(.init(entries: [http], autoConfigURL: nil, autoDiscovery: false, localAddress: "172.20.10.3", localMask: "255.255.255.240"))
+        XCTAssertEqual(f.status, .warn)
+        XCTAssertEqual(f.summary, "Proxy not on this network")
+        XCTAssertTrue(f.seen.contains("192.168.77.10:3128"), f.seen)
+    }
+
+    func testProxyOnThisNetworkIsInfo() {
+        let f = Checks.systemProxy(.init(entries: [http], autoConfigURL: nil, autoDiscovery: false, localAddress: "192.168.77.40", localMask: "255.255.255.0"))
+        XCTAssertEqual(f.status, .info)
+        XCTAssertEqual(f.summary, "Proxy set")
+    }
+
+    func testLocalProxyAppAndPublicProxy() {
+        let local = Checks.ProxyEntry(kind: "Web proxy (HTTP)", host: "127.0.0.1", port: 8888)
+        XCTAssertEqual(Checks.systemProxy(.init(entries: [local], autoConfigURL: nil, autoDiscovery: false, localAddress: "10.0.0.5", localMask: "255.0.0.0")).summary, "Local proxy app")
+        let cloud = Checks.ProxyEntry(kind: "Secure web proxy (HTTPS)", host: "proxy.example.com", port: 8080)
+        XCTAssertEqual(Checks.systemProxy(.init(entries: [cloud], autoConfigURL: nil, autoDiscovery: false, localAddress: "10.0.0.5", localMask: "255.0.0.0")).status, .info)
+    }
+
+    func testAutoConfigOnlyIsInfo() {
+        XCTAssertEqual(Checks.systemProxy(.init(entries: [], autoConfigURL: "http://wpad.example/proxy.pac", autoDiscovery: false, localAddress: nil, localMask: nil)).status, .info)
+    }
+}

@@ -10,7 +10,7 @@ public enum CheckStatus: Int, Sendable, Comparable, Codable {
 /// The ten checks, in the order the dropdown shows them.
 public enum CheckID: String, CaseIterable, Sendable, Codable {
     case captivePortal, dnsInterception, dnsAnswers, dnssec, certificates,
-         routerIdentity, networkDNS, pageIntegrity, wifiSecurity, networkMemory, routingHealth
+         routerIdentity, networkDNS, systemProxy, pageIntegrity, wifiSecurity, networkMemory, routingHealth
 
     public var title: String {
         switch self {
@@ -21,6 +21,7 @@ public enum CheckID: String, CaseIterable, Sendable, Codable {
         case .certificates: return "Certificates"
         case .routerIdentity: return "Router identity"
         case .networkDNS: return "Network DNS server"
+        case .systemProxy: return "System proxy"
         case .pageIntegrity: return "Page integrity"
         case .wifiSecurity: return "Wi-Fi security"
         case .networkMemory: return "Known network"

@@ -13,6 +13,7 @@ public enum NetIO {
     public static func dns(server: String, name: String, type: UInt16 = DNSMessage.typeA,
                            via interfaceType: NWInterface.InterfaceType?, timeout: TimeInterval = 3) async -> (answered: Bool, outcome: DNSOutcome) {
         let parameters = NWParameters.udp
+        parameters.preferNoProxies = true
         if let interfaceType { parameters.requiredInterfaceType = interfaceType }
         let connection = NWConnection(host: NWEndpoint.Host(server), port: 53, using: parameters)
         let packet = DNSMessage.query(name: name, type: type, id: UInt16.random(in: 1...0xfffe))
@@ -60,7 +61,9 @@ public enum NetIO {
         request.setValue("application/dns-message", forHTTPHeaderField: "Content-Type")
         request.setValue("application/dns-message", forHTTPHeaderField: "Accept")
         request.httpBody = DNSMessage.query(name: name, id: 0)
-        let session = URLSession(configuration: .ephemeral)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]   // the reference goes direct, never via a system proxy
+        let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
         do {
             let (data, response) = try await session.data(for: request)
@@ -83,6 +86,7 @@ public enum NetIO {
     public static func httpGet(host: String, path: String, via interfaceType: NWInterface.InterfaceType?,
                                timeout: TimeInterval = 6) async -> HTTPResult? {
         let parameters = NWParameters.tcp
+        parameters.preferNoProxies = true   // test the network itself, not a configured proxy (reported by its own check)
         if let interfaceType { parameters.requiredInterfaceType = interfaceType }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: 80, using: parameters)
         let request = "GET \(path) HTTP/1.1\r\nHost: \(host)\r\nUser-Agent: WiSecured\r\nAccept: */*\r\nConnection: close\r\n\r\n"
@@ -153,6 +157,7 @@ public enum NetIO {
             complete(true)   // let the handshake finish; the verdict comes from our own evaluation
         }, queue)
         let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        parameters.preferNoProxies = true
         if let interfaceType { parameters.requiredInterfaceType = interfaceType }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: 443, using: parameters)
         let gate = OnceGate()

@@ -30,6 +30,11 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var watchTimer: Timer?
     private var settleWork: DispatchWorkItem?
     private var cancellables: Set<AnyCancellable> = []
+    /// Phase 3: switching to the hotspot and back.
+    @Published private(set) var switching = false
+    @Published private(set) var switchMessage: String?
+    @Published private(set) var previousSSID: String?
+    private var notificationRouter: NotificationRouter?
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -48,6 +53,13 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         if Bundle.main.bundleURL.pathExtension == "app" {
             Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) }
+            // Red notifications carry a "Switch to my hotspot" button.
+            let center = UNUserNotificationCenter.current()
+            let action = UNNotificationAction(identifier: NotificationRouter.switchAction, title: "Switch to my hotspot", options: [.foreground])
+            center.setNotificationCategories([UNNotificationCategory(identifier: NotificationRouter.redCategory, actions: [action], intentIdentifiers: [])])
+            let router = NotificationRouter { [weak self] in Task { @MainActor in self?.switchToHotspot() } }
+            notificationRouter = router
+            center.delegate = router
         }
     }
 
@@ -188,6 +200,42 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         checkNow()
     }
 
+    // MARK: Hotspot (phase 3)
+
+    var isOnHotspot: Bool {
+        guard let ssid = report?.network.ssid, let hotspot = settings.hotspotSSID else { return false }
+        return ssid == hotspot
+    }
+
+    /// Asks, then joins the user's hotspot; remembers where we came from for "Back".
+    func switchToHotspot() {
+        guard let target = settings.hotspotSSID, !switching, !isOnHotspot else { return }
+        let from = WiFiSwitch.currentSSID() ?? report?.network.ssid
+        run(to: target, isHotspot: true, from: from)
+    }
+
+    /// Asks, then joins the network we were on before the hotspot.
+    func switchBack() {
+        guard let target = previousSSID, !switching else { return }
+        run(to: target, isHotspot: false, from: nil)
+    }
+
+    private func run(to target: String, isHotspot: Bool, from: String?) {
+        switching = true
+        switchMessage = nil
+        HotspotSwitcher.confirmAndSwitch(to: target, isHotspot: isHotspot) { [weak self] outcome in
+            guard let self else { return }
+            self.switching = false
+            guard let outcome else { return }
+            self.switchMessage = outcome.message
+            if outcome.succeeded {
+                if isHotspot { self.previousSSID = (from != target) ? from : nil } else { self.previousSSID = nil }
+                // The path monitor also notices; this makes sure the new network is checked.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { self.checkNow() } }
+            }
+        }
+    }
+
     // MARK: Timers
 
     private func restartTimers() {
@@ -213,6 +261,7 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         content.title = "Don't trust \"\(report.network.displayName)\""
         content.body = report.reason
         content.sound = .default
+        if settings.hotspotSSID != nil { content.categoryIdentifier = NotificationRouter.redCategory }
         let request = UNNotificationRequest(identifier: "wisecured-\(Int(report.date.timeIntervalSince1970))", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
@@ -227,5 +276,25 @@ final class Monitor: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     nonisolated static func allowed(_ status: CLAuthorizationStatus) -> Bool {
         status == .authorizedAlways || status.rawValue == 4
+    }
+}
+
+/// Handles the "Switch to my hotspot" button on red notifications, and shows notifications
+/// while WiSecured's own windows are in front.
+final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    static let redCategory = "WISECURED_RED"
+    static let switchAction = "SWITCH_HOTSPOT"
+    private let onSwitch: @Sendable () -> Void
+
+    init(onSwitch: @escaping @Sendable () -> Void) {
+        self.onSwitch = onSwitch
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if response.actionIdentifier == Self.switchAction { onSwitch() }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }

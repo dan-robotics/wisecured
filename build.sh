@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.1"
 BUNDLE_ID="io.github.dan-robotics.WiSecured"
 NAME="WiSecured"
 

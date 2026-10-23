@@ -37,6 +37,7 @@ struct DropdownView: View {
             if let tools, let report = monitor.report, let group = tools.group(for: report.network) {
                 myTools(group, kind: tools.classify(report.network))
             }
+            hotspotBar
             Button(action: monitor.checkNow) {
                 Text(monitor.checking ? "Checking…" : "Check now")
                     .font(.system(size: 13.5, weight: .semibold))
@@ -169,6 +170,36 @@ struct DropdownView: View {
         }
         .padding(.leading, 17)
         .textSelection(.enabled)
+    }
+
+    /// Phase 3: switch to the user's hotspot (prominent when the network isn't safe) and back.
+    @ViewBuilder
+    private var hotspotBar: some View {
+        let verdict = monitor.report?.verdict
+        if monitor.isOnHotspot, let back = monitor.previousSSID {
+            Button { monitor.switchBack() } label: {
+                Label("Back to \"\(back)\"", systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity, minHeight: 26)
+            }
+            .buttonStyle(.bordered).disabled(monitor.switching)
+        } else if let hotspot = monitor.settings.hotspotSSID, !monitor.isOnHotspot {
+            let urgent = verdict == .danger || verdict == .careful
+            Button { monitor.switchToHotspot() } label: {
+                Label(urgent ? "Switch to my hotspot" : "Switch to \"\(hotspot)\"", systemImage: "personalhotspot")
+                    .frame(maxWidth: .infinity, minHeight: 26)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(verdict == .danger ? Color(nsColor: Theme.red) : (urgent ? Color(nsColor: Theme.yellow) : Theme.accent.opacity(0.75)))
+            .foregroundStyle(verdict == .careful ? Color.black : Color.white)
+            .disabled(monitor.switching)
+        } else if monitor.settings.hotspotSSID == nil, verdict == .danger {
+            Button("Set up your phone hotspot in Settings to switch in one click…", action: actions.openSettings)
+                .buttonStyle(.link).font(.system(size: 12))
+        }
+        if monitor.switching {
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Switching…").font(.system(size: 12)) }
+        } else if let message = monitor.switchMessage {
+            Text(message).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     /// My tools for the network type the Mac is on (all groups are in the right-click menu).

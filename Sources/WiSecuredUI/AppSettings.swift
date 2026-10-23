@@ -18,6 +18,8 @@ final class AppSettings: ObservableObject {
     @Published var reference: Checker.Reference { didSet { defaults.set(reference.rawValue, forKey: "reference") } }
     @Published var notifyOnRed: Bool { didSet { defaults.set(notifyOnRed, forKey: "notifyOnRed") } }
     @Published var showNetworkName: Bool { didSet { defaults.set(showNetworkName, forKey: "showNetworkName") } }
+    /// The user's own phone hotspot (Wi-Fi name). Its password lives in the Keychain, never here.
+    @Published var hotspotSSID: String? { didSet { defaults.set(hotspotSSID, forKey: "hotspotSSID") } }
 
     init() {
         fullCheckMinutes = defaults.object(forKey: "fullCheckMinutes") as? Int ?? 15
@@ -25,6 +27,7 @@ final class AppSettings: ObservableObject {
         reference = Checker.Reference(rawValue: defaults.string(forKey: "reference") ?? "") ?? .quad9
         notifyOnRed = defaults.object(forKey: "notifyOnRed") as? Bool ?? true
         showNetworkName = defaults.object(forKey: "showNetworkName") as? Bool ?? false
+        hotspotSSID = defaults.string(forKey: "hotspotSSID")
     }
 
     var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }

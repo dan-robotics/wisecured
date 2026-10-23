@@ -249,6 +249,58 @@ public enum Checks {
         return p[0] == 10 || (p[0] == 172 && (16...31).contains(p[1])) || (p[0] == 192 && p[1] == 168)
     }
 
+    // MARK: 7b · System proxy
+
+    public struct ProxyEntry: Sendable, Equatable {
+        public var kind: String      // "Web proxy (HTTP)", "Secure web proxy (HTTPS)", "SOCKS proxy"
+        public var host: String
+        public var port: Int
+        public init(kind: String, host: String, port: Int) { self.kind = kind; self.host = host; self.port = port }
+        var label: String { "\(kind) \(host):\(port)" }
+    }
+
+    public struct ProxyReading: Sendable, Equatable {
+        public var entries: [ProxyEntry]
+        public var autoConfigURL: String?
+        public var autoDiscovery: Bool
+        public var localAddress: String?
+        public var localMask: String?
+        public init(entries: [ProxyEntry], autoConfigURL: String?, autoDiscovery: Bool, localAddress: String?, localMask: String?) {
+            self.entries = entries; self.autoConfigURL = autoConfigURL; self.autoDiscovery = autoDiscovery
+            self.localAddress = localAddress; self.localMask = localMask
+        }
+    }
+
+    /// A proxy configured on the Mac. Warns when it points at a private address that isn't on the
+    /// network the Mac is on now: traffic then hangs, or — on a network using
+    /// that range — goes to whoever takes that address.
+    public static func systemProxy(_ r: ProxyReading) -> Finding {
+        if r.entries.isEmpty && r.autoConfigURL == nil && !r.autoDiscovery {
+            return Finding(.systemProxy, .ok, summary: "None",
+                           seen: "No proxy is set on this Mac.", meaning: "Apps connect directly; nothing re-routes your web traffic.")
+        }
+        let offNetwork = r.entries.filter { isPrivate($0.host) && !isLoopback($0.host) && !sameSubnet($0.host, r.localAddress, r.localMask) }
+        var extra: [String] = []
+        if let pac = r.autoConfigURL { extra.append("automatic proxy configuration from \(pac)") }
+        if r.autoDiscovery { extra.append("auto proxy discovery is on") }
+        let extraText = extra.isEmpty ? "" : " Also: " + extra.joined(separator: "; ") + "."
+        if !offNetwork.isEmpty {
+            let list = offNetwork.map(\.label).joined(separator: ", ")
+            return Finding(.systemProxy, .warn, summary: "Proxy not on this network",
+                           seen: "\(list) is set on this Mac, but \(offNetwork.map(\.host).joined(separator: ", ")) isn't on the network you're on now.\(extraText)",
+                           meaning: "Apps that follow the system proxy send traffic there. On this network it goes nowhere (pages hang); on a network that uses that address range, whoever takes that address receives it. Often a work or test proxy left switched on.",
+                           action: "If you don't need it here, switch it off: System Settings › Network › Wi-Fi › Details › Proxies — or keep it in a separate network location for work.")
+        }
+        let list = (r.entries.map(\.label) + extra).joined(separator: "; ")
+        let local = r.entries.allSatisfy { isLoopback($0.host) }
+        return Finding(.systemProxy, .info, summary: local && !r.entries.isEmpty ? "Local proxy app" : "Proxy set",
+                       seen: "Set on this Mac: \(list).",
+                       meaning: local && !r.entries.isEmpty ? "A program on this Mac (e.g. security or debugging software) sees your web traffic first." : "Apps that follow the system proxy send traffic through it. Normal at work; check it's one you know.",
+                       action: "If you don't recognise it: System Settings › Network › Wi-Fi › Details › Proxies.")
+    }
+
+    static func isLoopback(_ host: String) -> Bool { host == "localhost" || host.hasPrefix("127.") || host == "::1" }
+
     // MARK: 8 · Page integrity
 
     public struct PageReading: Sendable {

@@ -88,6 +88,7 @@ public struct Checker: Sendable {
             Checks.certificates(await certs),
             Checks.routerIdentity(router: context.router, mac: context.routerMAC, otherIPs: context.otherIPsWithRouterMAC, previousMAC: previousRouterMAC),
             Checks.networkDNS(servers: context.dnsFromNetwork, router: context.router, setOnMac: context.dnsSetOnMac),
+            Checks.systemProxy(proxyReading(context)),
             Checks.pageIntegrity(.init(appleBody: appleResult?.body, firefoxBody: (await firefox)?.body, httpsUpgradeKept: upgradeKept)),
             Checks.wifiSecurity(isWiFi: context.isWiFi, securityRaw: context.securityRaw, securityName: context.security),
             Checks.networkMemory(NetworkMemory.assess(context, records: memory)),
@@ -138,6 +139,14 @@ public struct Checker: Sendable {
             for await reading in group { all.append(reading) }
             return all.sorted { $0.host < $1.host }
         }
+    }
+
+    /// Proxies configured on this Mac (as apps see them), plus this network's own address range.
+    func proxyReading(_ context: NetworkContext) -> Checks.ProxyReading {
+        let local = context.interfaceName.flatMap { NetworkReader.interfaces().ipv4[$0] }
+        let p = NetworkReader.systemProxies()
+        return Checks.ProxyReading(entries: p.entries, autoConfigURL: p.autoConfigURL, autoDiscovery: p.autoDiscovery,
+                                   localAddress: local?.address, localMask: local?.mask)
     }
 
     func routingReading(_ context: NetworkContext) -> Checks.RoutingReading {
