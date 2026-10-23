@@ -55,7 +55,9 @@ public enum NetIO {
     public static let cloudflareDoH = URL(string: "https://1.1.1.2/dns-query")!
     public static let googleDoH = URL(string: "https://8.8.8.8/dns-query")!
 
-    public static func doh(name: String, endpoint: URL, timeout: TimeInterval = 5) async -> DNSOutcome {
+    /// `certificateName` = check the server's certificate against this name instead of the IP in
+    /// `endpoint` (DNS4EU: its certificate lists names only). Same full validation either way.
+    public static func doh(name: String, endpoint: URL, certificateName: String? = nil, timeout: TimeInterval = 5) async -> DNSOutcome {
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("application/dns-message", forHTTPHeaderField: "Content-Type")
@@ -63,7 +65,7 @@ public enum NetIO {
         request.httpBody = DNSMessage.query(name: name, id: 0)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]   // the reference goes direct, never via a system proxy
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: certificateName.map(TrustByName.init), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         do {
             let (data, response) = try await session.data(for: request)
@@ -81,6 +83,7 @@ public enum NetIO {
         public var status: Int
         public var headers: [String: String]
         public var body: String
+        public var data: Data
     }
 
     public static func httpGet(host: String, path: String, via interfaceType: NWInterface.InterfaceType?,
@@ -90,10 +93,48 @@ public enum NetIO {
         if let interfaceType { parameters.requiredInterfaceType = interfaceType }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: 80, using: parameters)
         let request = "GET \(path) HTTP/1.1\r\nHost: \(host)\r\nUser-Agent: WiSecured\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        guard let raw = await exchange(connection, request: Data(request.utf8), timeout: timeout, limit: 262_144) else { return nil }
+        return parseHTTP(raw)
+    }
+
+    // MARK: HTTPS with strict certificates (owner lookups, public address)
+
+    /// GET over HTTPS. The certificate must be valid for `verifyName` (default: `host`) AND chain
+    /// to one of Apple's built-in root certificates — a root added on this Mac (company proxy,
+    /// security software, malware) is refused, so nothing in the middle can fake the answer.
+    /// Returns nil when the connection or that check fails.
+    public static func httpsGet(host: String, path: String, verifyName: String? = nil, accept: String = "*/*",
+                                via interfaceType: NWInterface.InterfaceType? = nil, timeout: TimeInterval = 8) async -> HTTPResult? {
+        let name = verifyName ?? host
+        let tls = NWProtocolTLS.Options()
+        if Checks.ipv4(name) == nil { sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, name) }
+        sec_protocol_options_add_tls_application_protocol(tls.securityProtocolOptions, "http/1.1")
+        sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trust, complete in
+            complete(Self.strictlyTrusted(sec_trust_copy_ref(trust).takeRetainedValue(), name: name))
+        }, queue)
+        let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        parameters.preferNoProxies = true
+        if let interfaceType { parameters.requiredInterfaceType = interfaceType }
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: 443, using: parameters)
+        let request = "GET \(path) HTTP/1.1\r\nHost: \(name)\r\nUser-Agent: WiSecured\r\nAccept: \(accept)\r\nConnection: close\r\n\r\n"
+        guard let raw = await exchange(connection, request: Data(request.utf8), timeout: timeout, limit: 2_000_000) else { return nil }
+        return parseHTTP(raw)
+    }
+
+    /// Valid for `name` and ending at a built-in root (not one added on this Mac).
+    static func strictlyTrusted(_ trust: SecTrust, name: String) -> Bool {
+        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, name as CFString))
+        var error: CFError?
+        guard SecTrustEvaluateWithError(trust, &error) else { return false }
+        let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
+        return chain.last.map { builtInRoots.contains(SecCertificateCopyData($0) as Data) } ?? false
+    }
+
+    /// Sends one request and reads until the server closes (or the size limit / timeout).
+    static func exchange(_ connection: NWConnection, request: Data, timeout: TimeInterval, limit: Int) async -> Data? {
         let gate = OnceGate()
         let buffer = DataBuffer()
-
-        let raw: Data? = await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
             @Sendable func finish(_ data: Data?) {
                 guard gate.first() else { return }
                 connection.cancel()
@@ -102,13 +143,13 @@ public enum NetIO {
             @Sendable func receive() {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
                     if let data { buffer.append(data) }
-                    if isComplete || error != nil || buffer.count > 262_144 { finish(buffer.data) } else { receive() }
+                    if isComplete || error != nil || buffer.count > limit { finish(buffer.data) } else { receive() }
                 }
             }
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    connection.send(content: Data(request.utf8), completion: .contentProcessed { error in
+                    connection.send(content: request, completion: .contentProcessed { error in
                         if error != nil { finish(nil) } else { receive() }
                     })
                 case .failed, .waiting: finish(nil)
@@ -118,7 +159,10 @@ public enum NetIO {
             connection.start(queue: queue)
             queue.asyncAfter(deadline: .now() + timeout) { finish(buffer.count > 0 ? buffer.data : nil) }
         }
-        guard let raw, let split = raw.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+    }
+
+    static func parseHTTP(_ raw: Data) -> HTTPResult? {
+        guard let split = raw.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let head = String(decoding: raw[..<split.lowerBound], as: UTF8.self)
         var body = Data(raw[split.upperBound...])
         let lines = head.components(separatedBy: "\r\n")
@@ -129,7 +173,7 @@ public enum NetIO {
             headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
         if headers["transfer-encoding"]?.lowercased().contains("chunked") == true { body = dechunk(body) }
-        return HTTPResult(status: status, headers: headers, body: String(decoding: body, as: UTF8.self))
+        return HTTPResult(status: status, headers: headers, body: String(decoding: body, as: UTF8.self), data: body)
     }
 
     static func dechunk(_ data: Data) -> Data {
@@ -191,6 +235,21 @@ public enum NetIO {
     }()
 
     static let queue = DispatchQueue(label: "io.github.dan-robotics.WiSecured.net", attributes: .concurrent)
+}
+
+/// URLSession delegate: validates the server certificate against a fixed name (used when an
+/// endpoint is reached by IP but its certificate names only hosts).
+final class TrustByName: NSObject, URLSessionDelegate, @unchecked Sendable {
+    let name: String
+    init(_ name: String) { self.name = name }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else { return (.performDefaultHandling, nil) }
+        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, name as CFString))
+        var error: CFError?
+        return SecTrustEvaluateWithError(trust, &error) ? (.useCredential, URLCredential(trust: trust)) : (.cancelAuthenticationChallenge, nil)
+    }
 }
 
 // MARK: Small thread-safe helpers

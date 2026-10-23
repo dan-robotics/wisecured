@@ -81,39 +81,134 @@ public enum Checks {
         }
     }
 
+    /// Evidence for judging a rewritten answer (0.5.0). Without it (`.none`) every rewrite stays
+    /// red, exactly as before: yellow or green needs proof, never a guess.
+    public struct DNSEvidence: Sendable {
+        /// The network is one the user marked Trusted or Office.
+        public var trustedNetwork: Bool
+        /// Who owns this network's own public address (its internet provider).
+        public var provider: OwnerInfo?
+        /// Rewritten public address → its registered owner.
+        public var owners: [String: OwnerInfo]
+        /// Private address → whether it's a filter device the user confirmed (option D).
+        public var devices: [String: FilterMatch]
+        /// Owner lookups are switched on (wording only).
+        public var lookupsOn: Bool
+
+        public init(trustedNetwork: Bool = false, provider: OwnerInfo? = nil, owners: [String: OwnerInfo] = [:],
+                    devices: [String: FilterMatch] = [:], lookupsOn: Bool = false) {
+            self.trustedNetwork = trustedNetwork; self.provider = provider; self.owners = owners
+            self.devices = devices; self.lookupsOn = lookupsOn
+        }
+        public static let none = DNSEvidence()
+    }
+
+    /// Addresses the network's DNS gave that match neither encrypted DNS nor the well-known ones.
+    public static func rewrittenAddresses(_ readings: [AnchorReading]) -> [String] {
+        var all = Set<String>()
+        for r in readings {
+            let truth: Set<String> = { if case .addresses(let set) = r.reference { return set } else { return r.expected } }()
+            if case .addresses(let got) = r.network, got.isDisjoint(with: truth), got.isDisjoint(with: r.expected) { all.formUnion(got) }
+        }
+        return all.sorted()
+    }
+
+    /// One rewritten address: how bad it is and why (shown in brackets in "Seen").
+    static func judgeRewrite(_ address: String, _ e: DNSEvidence) -> (status: CheckStatus, note: String) {
+        if isLoopback(address) { return (.info, "this Mac itself — a blocking answer") }
+        if isPrivate(address) {
+            switch e.devices[address] ?? .unconfirmed {
+            case .confirmed:
+                return e.trustedNetwork ? (.ok, "your filter device — confirmed, same hardware ID")
+                                        : (.info, "your filter device, but this network is no longer marked Trusted")
+            case .macChanged(let device, let now):
+                return (.danger, "your filter's address, but another device answers there now (hardware ID \(now ?? "unknown"), was \(device.mac))")
+            case .unconfirmed:
+                return e.trustedNetwork ? (.info, "a device on your own network, not confirmed as your filter")
+                                        : (.danger, "a device on this network, not the internet — on a network you don't control, a stranger's device")
+            }
+        }
+        if let owner = e.owners[address] {
+            if let provider = e.provider, Owners.sameProvider(owner, provider) {
+                return (.warn, "owned by \(owner.label) — the same company as this network's internet connection")
+            }
+            let theirs = e.provider.map { " — not this network's internet provider (\($0.label))" } ?? ""
+            return (.danger, "owned by \(owner.labelWithCountry)\(theirs)")
+        }
+        return (.danger, e.lookupsOn ? "owner unknown" : "owner not looked up")
+    }
+
+    private struct Part {
+        var status: CheckStatus, summary: String, seen: String, meaning: String, action: String
+    }
+
     /// `server` = the DNS server that was asked (named in the finding).
     /// `fallback` = the Mac's own DNS server couldn't be reached over this network (typically a
     /// VPN's), so the network's DNS server was tested instead — the wording then says so.
     public static func dnsAnswers(_ readings: [AnchorReading], referenceName: String = "Quad9", server: String? = nil,
-                                  fallback: Bool = false, vpnOn: Bool = false) -> Finding {
+                                  fallback: Bool = false, vpnOn: Bool = false, evidence e: DNSEvidence = .none) -> Finding {
         let asked = server.map { " (\($0))" } ?? ""
         let who = fallback
             ? "The network's DNS\(asked) was tested — your \(vpnOn ? "VPN's DNS server" : "own DNS server") isn't reachable over this \(vpnOn ? "Wi-Fi" : "network"). It"
             : "Your DNS\(asked)"
-        var mismatched: [String] = [], blocked: [String] = [], matched = 0, untested = 0
+        var mismatched: [(name: String, got: [String])] = [], blocked: [String] = [], matched = 0, untested = 0
         for r in readings {
             // The truth is the encrypted answer when it worked, else the well-known addresses.
             let truth: Set<String> = { if case .addresses(let set) = r.reference { return set } else { return r.expected } }()
             switch r.network {
             case .addresses(let got):
                 if got.isDisjoint(with: truth) && got.isDisjoint(with: r.expected) {
-                    mismatched.append("\(r.name) → \(got.sorted().joined(separator: ", "))")
+                    mismatched.append((r.name, got.sorted()))
                 } else { matched += 1 }
             case .blocked: blocked.append(r.name)
             default: untested += 1
             }
         }
+        var parts: [Part] = []
         if !mismatched.isEmpty {
-            return Finding(.dnsAnswers, .danger, summary: "Fake answers (\(mismatched.count) of \(readings.count))",
-                           seen: "\(who) gave different addresses than encrypted \(referenceName): " + mismatched.joined(separator: "; ") + ".",
-                           meaning: "The network is changing DNS answers. That can send you to fake copies of real websites.",
-                           action: "Don't log in to anything here. Switch to your hotspot or use a VPN.")
+            var worst = CheckStatus.ok
+            var lines: [String] = [], unknownOwner = false
+            for m in mismatched {
+                let judged = m.got.map { ($0, judgeRewrite($0, e)) }
+                worst = max(worst, judged.map(\.1.status).max() ?? .danger)
+                if judged.contains(where: { !isPrivate($0.0) && !isLoopback($0.0) && e.owners[$0.0] == nil }) { unknownOwner = true }
+                lines.append("\(m.name) → " + judged.map { "\($0.0) (\($0.1.note))" }.joined(separator: ", "))
+            }
+            let seen = "\(who) gave different addresses than encrypted \(referenceName): " + lines.joined(separator: "; ") + "."
+            switch worst {
+            case .ok:
+                parts.append(Part(status: .ok, summary: "Your filter", seen: seen,
+                                  meaning: "Your own DNS filter answered for names it blocks — the device you confirmed, recognised by its hardware ID.", action: ""))
+            case .info:
+                parts.append(Part(status: .info, summary: "Local device answered", seen: seen,
+                                  meaning: "Something on your own network answered in place of the real address — normally your DNS filter (e.g. Pi-hole) sending blocked names to itself.",
+                                  action: "If it's your filter, choose \"This is my filter\" below so WiSecured recognises it from now on."))
+            case .warn:
+                parts.append(Part(status: .warn, summary: "Rewritten by your provider", seen: seen,
+                                  meaning: "Internet-provider filters work like this (security or parental filters): blocked names are sent to the provider's own servers. WiSecured can't see inside the provider — the evidence is that the address belongs to it.",
+                                  action: "If you didn't expect a filter, check your router's DNS settings and your provider account. On a network you don't control, prefer your hotspot."))
+            default:
+                parts.append(Part(status: .danger, summary: "Fake answers (\(mismatched.count) of \(readings.count))", seen: seen,
+                                  meaning: "The network is changing DNS answers. That can send you to fake copies of real websites."
+                                    + (unknownOwner ? " A provider's filter can look the same from here — \"Who owns this?\" shows who the address belongs to." : ""),
+                                  action: "Don't log in to anything here. Switch to your hotspot or use a VPN."))
+            }
         }
         if !blocked.isEmpty {
-            return Finding(.dnsAnswers, .info, summary: matched > 0 ? "Filtered · others match" : "Filtered",
-                           seen: "\(who) blocked \(blocked.joined(separator: ", ")) (answered 0.0.0.0 or \"not found\"). Encrypted \(referenceName) answered them normally.",
-                           meaning: "A DNS filter is active, such as an ad-blocker (e.g. Pi-hole) or a parental/company filter. It blocks names but doesn't send you elsewhere.",
-                           action: "Fine on your own network. On public Wi-Fi it means the network controls your DNS.")
+            let seen = "\(who) blocked \(blocked.joined(separator: ", ")) (answered 0.0.0.0 or \"not found\"). Encrypted \(referenceName) answered them normally."
+            if let server, case .confirmed = e.devices[server], e.trustedNetwork {
+                parts.append(Part(status: .ok, summary: matched > 0 ? "Your filter · others match" : "Your filter",
+                                  seen: seen + " \(server) is your confirmed filter device (same hardware ID).",
+                                  meaning: "Your own DNS filter blocks these names — expected, nothing is sending you elsewhere.", action: ""))
+            } else {
+                parts.append(Part(status: .info, summary: matched > 0 ? "Filtered · others match" : "Filtered", seen: seen,
+                                  meaning: "A DNS filter is active, such as an ad-blocker (e.g. Pi-hole) or a parental/company filter. It blocks names but doesn't send you elsewhere.",
+                                  action: "Fine on your own network. On public Wi-Fi it means the network controls your DNS."))
+            }
+        }
+        if let worst = parts.max(by: { $0.status < $1.status }) {
+            return Finding(.dnsAnswers, worst.status, summary: worst.summary, seen: parts.map(\.seen).joined(separator: " "),
+                           meaning: worst.meaning, action: worst.action)
         }
         if matched == 0 {
             return Finding(.dnsAnswers, .unknown, summary: "Couldn't test",
@@ -217,7 +312,39 @@ public enum Checks {
 
     /// `servers` = handed out by the network (rogue-DHCP check); `setOnMac` = set by hand on this
     /// Mac (overrides the network's; DNS-changer malware does the same, so it is always shown).
-    public static func networkDNS(servers: [String], router: String?, setOnMac: [String] = []) -> Finding {
+    /// P2: a DNS server set by hand on a private address outside the current network, and
+    /// whether it answered a live test over any route (a VPN's included).
+    public struct OffNetworkDNS: Sendable, Equatable {
+        public var address: String
+        public var answered: Bool
+        public init(address: String, answered: Bool) { self.address = address; self.answered = answered }
+    }
+
+    /// `devices` / `trusted` = option D (filter devices the user confirmed on a Trusted network).
+    public static func networkDNS(servers: [String], router: String?, setOnMac: [String] = [],
+                                  devices: [String: FilterMatch] = [:], trusted: Bool = false, offNetwork: OffNetworkDNS? = nil) -> Finding {
+        if let off = offNetwork, !off.answered, setOnMac.contains(off.address) {
+            return Finding(.networkDNS, .warn, summary: "DNS not on this network",
+                           seen: "This Mac's DNS is set by hand to \(off.address), which isn't on the network you're on now and didn't answer a test (not through a VPN either).",
+                           meaning: "Names won't resolve, so websites and apps fail — typically a home DNS filter (e.g. Pi-hole) still set after leaving home.",
+                           action: "Switch DNS back to the network's: System Settings › Network › Wi-Fi › Details › DNS (remove \(off.address)), or let WiSecured's DNS rules do it.")
+        }
+        // A confirmed filter device answering where it was confirmed → proven, green.
+        let local = (setOnMac + servers).filter(isPrivate)
+        for address in local {
+            if case .macChanged(let device, let now) = devices[address] ?? .unconfirmed {
+                return Finding(.networkDNS, .danger, summary: "Filter device changed",
+                               seen: "\(address) is the filter device you confirmed, but another device answers there now (hardware ID \(now ?? "unknown"), was \(device.mac)).",
+                               meaning: "Something has taken your filter's address — it now decides where every name leads. (Rarely: you replaced the filter's hardware.)",
+                               action: "If you replaced it yourself, remove it under Settings › My networks › Filter devices and confirm it again. Otherwise switch to your hotspot.")
+            }
+        }
+        if trusted, let address = local.first(where: { if case .confirmed = devices[$0] ?? .unconfirmed { return true }; return false }) {
+            let how = setOnMac.contains(address) ? "set by hand on this Mac" : "handed out by the network"
+            return Finding(.networkDNS, .ok, summary: "Your filter",
+                           seen: "DNS questions go to \(address) (\(how)) — the filter device you confirmed, same hardware ID.",
+                           meaning: "Your own DNS filter handles DNS on this trusted network.")
+        }
         if !setOnMac.isEmpty {
             let handed = servers.isEmpty ? "nothing" : servers.joined(separator: ", ") + (servers.first == router ? " (the router)" : "")
             return Finding(.networkDNS, .info, summary: "Set on this Mac",
@@ -265,9 +392,11 @@ public enum Checks {
         public var autoDiscovery: Bool
         public var localAddress: String?
         public var localMask: String?
-        public init(entries: [ProxyEntry], autoConfigURL: String?, autoDiscovery: Bool, localAddress: String?, localMask: String?) {
+        /// A work VPN (not Tailscale) is up: a private proxy can be reachable through it.
+        public var vpnOn: Bool
+        public init(entries: [ProxyEntry], autoConfigURL: String?, autoDiscovery: Bool, localAddress: String?, localMask: String?, vpnOn: Bool = false) {
             self.entries = entries; self.autoConfigURL = autoConfigURL; self.autoDiscovery = autoDiscovery
-            self.localAddress = localAddress; self.localMask = localMask
+            self.localAddress = localAddress; self.localMask = localMask; self.vpnOn = vpnOn
         }
     }
 
@@ -284,6 +413,12 @@ public enum Checks {
         if let pac = r.autoConfigURL { extra.append("automatic proxy configuration from \(pac)") }
         if r.autoDiscovery { extra.append("auto proxy discovery is on") }
         let extraText = extra.isEmpty ? "" : " Also: " + extra.joined(separator: "; ") + "."
+        if !offNetwork.isEmpty, r.vpnOn {
+            return Finding(.systemProxy, .info, summary: "Proxy via VPN",
+                           seen: "\(offNetwork.map(\.label).joined(separator: ", ")) is set on this Mac. It isn't on this Wi-Fi, but a VPN is connected, which normally reaches it.\(extraText)",
+                           meaning: "Normal for a work proxy while the work VPN is on.",
+                           action: "If pages hang, the proxy isn't reachable through this VPN — switch it off in System Settings › Network › Wi-Fi › Details › Proxies.")
+        }
         if !offNetwork.isEmpty {
             let list = offNetwork.map(\.label).joined(separator: ", ")
             return Finding(.systemProxy, .warn, summary: "Proxy not on this network",
@@ -396,10 +531,10 @@ public enum Checks {
         }
         switch r.match {
         case .known(let record):
-            let trusted = record.kind == .trusted
-            return Finding(.networkMemory, .ok, summary: trusted ? "Trusted" : "Seen \(record.timesSeen)×",
+            let trusted = record.kind.isTrustedLike
+            return Finding(.networkMemory, .ok, summary: trusted ? record.kind.label : "Seen \(record.timesSeen)×",
                            seen: "\(name) with the same router as before — first seen \(record.firstSeen.formatted(date: .abbreviated, time: .omitted)), \(record.timesSeen) visit\(record.timesSeen == 1 ? "" : "s").",
-                           meaning: trusted ? "A network you marked as trusted, and it is the same one." : "The same network as before.")
+                           meaning: trusted ? "A network you marked as \(record.kind.label.lowercased()), and it is the same one." : "The same network as before.")
         case .new(sameName: true, trustedName: true, let routers):
             return Finding(.networkMemory, .warn, summary: "Trusted name, different router",
                            seen: "\(name) is a network you trust, but its router (\(r.routerMAC ?? "unknown")) isn't the one remembered (\(routers.joined(separator: ", "))).",

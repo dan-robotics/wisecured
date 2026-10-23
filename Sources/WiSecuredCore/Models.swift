@@ -113,6 +113,13 @@ public struct NetworkContext: Sendable, Equatable {
     public var displayName: String { ssid ?? (isWiFi ? "Wi-Fi (name hidden)" : (interfaceName ?? "Network")) }
 }
 
+/// A device on the local network, by address and hardware ID.
+public struct LocalDevice: Sendable, Equatable {
+    public var address: String
+    public var mac: String
+    public init(address: String, mac: String) { self.address = address; self.mac = mac }
+}
+
 /// One full check: the network, every finding and the overall verdict.
 public struct Report: Sendable {
     public var date: Date
@@ -121,13 +128,25 @@ public struct Report: Sendable {
     public var verdict: Verdict
     /// One or two sentences under the verdict.
     public var reason: String
+    /// Who owns this network's public address (its internet provider), when looked up.
+    public var provider: OwnerInfo?
+    /// Public addresses the DNS answers check found rewritten, and their owners when known.
+    public var rewrites: [String]
+    public var owners: [String: OwnerInfo]
+    /// A local DNS device the user could confirm as their filter (option D).
+    public var filterCandidate: LocalDevice?
 
-    public init(date: Date, network: NetworkContext, findings: [Finding], verdict: Verdict, reason: String) {
+    public init(date: Date, network: NetworkContext, findings: [Finding], verdict: Verdict, reason: String,
+                provider: OwnerInfo? = nil, rewrites: [String] = [], owners: [String: OwnerInfo] = [:], filterCandidate: LocalDevice? = nil) {
         self.date = date
         self.network = network
         self.findings = findings
         self.verdict = verdict
         self.reason = reason
+        self.provider = provider
+        self.rewrites = rewrites
+        self.owners = owners
+        self.filterCandidate = filterCandidate
     }
 
     public func finding(_ id: CheckID) -> Finding? { findings.first { $0.id == id } }

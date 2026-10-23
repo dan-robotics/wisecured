@@ -5,16 +5,19 @@ import Foundation
 /// router; a chain café's branches have different routers, so they stay separate networks).
 public struct RememberedNetwork: Codable, Sendable, Identifiable, Equatable {
     public enum Kind: String, Codable, Sendable, CaseIterable {
-        case automatic, trusted, hotspot, publicNetwork
+        case automatic, trusted, office, hotspot, publicNetwork
 
         public var label: String {
             switch self {
             case .automatic: return "Automatic"
             case .trusted: return "Trusted"
+            case .office: return "Office"
             case .hotspot: return "Phone hotspot"
             case .publicNetwork: return "Public"
             }
         }
+        /// Trusted and Office both count as networks you control (or your employer does).
+        public var isTrustedLike: Bool { self == .trusted || self == .office }
     }
 
     public var id: UUID
@@ -88,7 +91,7 @@ public enum NetworkMemory {
             match = .known(found)
         } else {
             match = .new(sameName: !sameName.isEmpty,
-                         trustedName: sameName.contains { $0.kind == .trusted },
+                         trustedName: sameName.contains { $0.kind.isTrustedLike },
                          rememberedRouters: sameName.flatMap(\.routerMACs))
         }
         let strongest = sameName.max { ($0.strongestSecurityRank ?? -1) < ($1.strongestSecurityRank ?? -1) }
@@ -100,6 +103,12 @@ public enum NetworkMemory {
 
     /// Pure: the records after seeing `context` once more (new network added, or the known one
     /// updated with this visit, a new access point / router address, the strongest security).
+    /// The remembered record for the network in `context`, if it's a known one.
+    public static func record(for context: NetworkContext, in records: [RememberedNetwork]) -> RememberedNetwork? {
+        if case .known(let record) = assess(context, records: records).match { return record }
+        return nil
+    }
+
     public static func remembering(_ context: NetworkContext, in records: [RememberedNetwork], at date: Date = Date()) -> [RememberedNetwork] {
         guard context.routerMAC != nil || context.ssid != nil else { return records }
         var updated = records

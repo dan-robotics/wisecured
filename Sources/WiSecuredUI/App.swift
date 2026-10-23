@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let monitor = Monitor(settings: settings)
+        let monitor = Monitor(settings: settings, tools: tools)
         self.monitor = monitor
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -102,9 +102,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let trusted = monitor?.isCurrentTrusted == true
             menu.addItem(menuItem(trusted ? "Stop trusting this network" : "Trust this network", #selector(trustFromMenu), ""))
         }
-        if let monitor, monitor.isOnHotspot, let back = monitor.previousSSID {
-            menu.addItem(menuItem("Back to \"\(back)\"", #selector(backFromMenu), ""))
-        } else if let monitor, monitor.settings.hotspotSSID != nil, !monitor.isOnHotspot {
+        if let monitor, monitor.isOnHotspot {
+            if let back = monitor.previousSSID { menu.addItem(menuItem("Back to \"\(back)\"", #selector(backFromMenu), "")) }
+            for ssid in monitor.trustedSwitchTargets {
+                let item = menuItem("Switch to \"\(ssid)\"", #selector(switchToFromMenu(_:)), "")
+                item.representedObject = ssid
+                menu.addItem(item)
+            }
+        } else if let monitor, monitor.settings.hotspotSSID != nil {
             menu.addItem(menuItem("Switch to my hotspot", #selector(hotspotFromMenu), ""))
         }
         menu.addItem(menuItem("Settings…", #selector(settingsFromMenu), ","))
@@ -146,6 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func trustFromMenu() { monitor?.toggleTrustCurrent() }
     @objc private func hotspotFromMenu() { monitor?.switchToHotspot() }
     @objc private func backFromMenu() { monitor?.switchBack() }
+    @objc private func switchToFromMenu(_ sender: NSMenuItem) {
+        if let ssid = sender.representedObject as? String { monitor?.switchTo(ssid) }
+    }
 
     @objc private func toolFromMenu(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? ToolBox else { return }
@@ -162,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func aboutFromMenu() {
         NSApp.activate()
         let credits = NSAttributedString(
-            string: (aboutNote.map { "\($0)\n" } ?? "") + "Public Wi-Fi, secured.\nChecks whether the network you're on is tampering with your connection. Read-only, local, no telemetry.",
+            string: (aboutNote.map { "\($0)\n" } ?? "") + "Public Wi-Fi, secured.\nChecks whether the network you're on is tampering with your connection. Local, no telemetry; changes settings only when you switch on DNS rules or Proxy Auto.",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "WiSecured",

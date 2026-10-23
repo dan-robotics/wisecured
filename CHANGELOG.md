@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] — 2026-10-23 — Evidence instead of guesses; Secure my DNS, DNS rules, Proxy Auto
+
+- **DNS answers — evidence-based:** a rewritten answer stays 🔴 unless there's proof. 🟡 **"Rewritten by your provider"** when the address is registered to the same organisation as your network's own public address (shared registry handle or abuse-mail domain); 🟢 **"Your filter"** for a filter device you confirmed (address + hardware ID, on that Trusted network); 🔵 an unconfirmed local device on a Trusted network; a confirmed filter answering with a different hardware ID → 🔴. Without that evidence, results are exactly as in 0.4.1.
+- **Owner lookups** (Settings › General, on by default) and a manual **Who owns this?** button: RDAP straight to the regional registries, over HTTPS accepting only Apple's built-in certificate authorities. The dropdown names your internet provider.
+- **My filter devices:** "This is my filter" for a Pi-hole or similar; listed in Settings › My networks.
+- **Network DNS server:** warns when DNS set by hand isn't reachable on the network you're on ("DNS not on this network").
+- **System proxy:** a private proxy reachable through a connected work VPN is info, not a warning.
+- **New reference providers:** AdGuard (94.140.14.14) and DNS4EU (86.54.11.1), both tested for DoH and DNSSEC.
+- **Secure my DNS** (off until you install it): encrypted-DNS profile for your chosen provider, with networks to stay off on and domains to leave to the VPN.
+- **DNS rules** and **Proxy Auto** (both off by default), a new **Office** network type, **Copy report** (masked), **Back to …** that survives a restart, **Switch to "<trusted network>"** while on the hotspot, and a clearer Location prompt.
+- 62 tests.
+
+
 ## [0.4.1] — 2026-10-23 — System proxy check; tests skip proxies
 
 - **System proxy** (12th check): warns (🟡) when a proxy set on your Mac points at a private address that isn't on the network you're on — plain web traffic then hangs, or goes to whoever takes that address (often a forgotten work proxy). A proxy on this network, a local proxy app, a public proxy or automatic proxy configuration are shown as info.
